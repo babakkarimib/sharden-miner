@@ -46,18 +46,14 @@ pub async fn mine(
                 round, nonce, tier
             );
 
-            // claim will be implemented later
+            crate::claim::submit_claim(
+                args,
+                contract,
+                round,
+                nonce,
+            ).await?;
             return Ok(());
         }
-
-        nonce = nonce.wrapping_add(1);
-
-        crate::claim::submit_claim(
-            args,
-            contract,
-            round,
-            nonce,
-        ).await?;
 
         if nonce % 10_000 == 0 {
             let latest = provider.get_block_number().await?;
@@ -67,6 +63,8 @@ pub async fn mine(
                 return Ok(()); // go back to RPC loop
             }
         }
+
+        nonce = nonce.wrapping_add(1);
     }
 }
 
