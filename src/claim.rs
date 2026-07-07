@@ -7,12 +7,11 @@ use crate::args::Args;
 
 pub async fn submit_claim(
     args: &Args,
+    signer: PrivateKeySigner,
     contract: Address,
     round: u64,
     nonce: u64,
 ) -> Result<()> {
-    let signer: PrivateKeySigner = args.private_key.parse()?;
-
     let provider = ProviderBuilder::new()
         .wallet(signer)
         .connect(&args.rpc)

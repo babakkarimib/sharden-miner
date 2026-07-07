@@ -1,5 +1,5 @@
 use anyhow::Result;
-use alloy::{primitives::{Address, U256}, providers::Provider};
+use alloy::{primitives::{Address, U256}, providers::Provider, signers::local::PrivateKeySigner};
 use tiny_keccak::{Hasher, Keccak};
 
 use crate::args::Args;
@@ -11,11 +11,12 @@ pub async fn mine(
     round: u64,
     challenge: [u8; 32],
 ) -> Result<()> {
-    let address: Address = args.private_key.parse()
-        .map_err(|_| anyhow::anyhow!("invalid address format"))?;
+    let signer: PrivateKeySigner = args.private_key.parse()
+        .map_err(|_| anyhow::anyhow!("invalid private_key format"))?;
+    let address: Address = signer.address();
 
     let contract: Address = args.contract.parse()
-    .map_err(|_| anyhow::anyhow!("invalid contract address"))?;
+        .map_err(|_| anyhow::anyhow!("invalid contract address"))?;
 
     let mut nonce: u64 = args.nonce;
 
@@ -48,6 +49,7 @@ pub async fn mine(
 
             crate::claim::submit_claim(
                 args,
+                signer,
                 contract,
                 round,
                 nonce,
