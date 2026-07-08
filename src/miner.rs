@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant};
+use tokio::time::{sleep, Duration};
+
+use std::sync::{
+    Arc, atomic::{AtomicBool, AtomicU64, Ordering},
+};
 
 use anyhow::Result;
 use alloy::{primitives::{Address, U256}, providers::Provider, signers::local::PrivateKeySigner};
@@ -8,72 +12,128 @@ use crate::args::Args;
 
 /// Entry point from RPC layer
 pub async fn mine(
-    provider: &impl Provider,
+    provider: impl Provider + 'static,
     args: &Args,
     round: u64,
     challenge: [u8; 32],
-    next_check: &mut Instant
+    signer: &PrivateKeySigner,
+    contract: &Address
+
 ) -> Result<()> {
-    let signer: PrivateKeySigner = args.private_key.parse()
-        .map_err(|_| anyhow::anyhow!("invalid private_key format"))?;
     let address: Address = signer.address();
 
-    let contract: Address = args.contract.parse()
-        .map_err(|_| anyhow::anyhow!("invalid contract address"))?;
+    let threads = rayon::current_num_threads();
+    let nonce = Arc::new(AtomicU64::new(args.nonce));
+    let found = Arc::new(AtomicBool::new(false));
+    let switch_round = Arc::new(AtomicBool::new(false));
 
-    let mut nonce: u64 = args.nonce;
+    let delay = Arc::new(AtomicU64::new(args.round_check_delay_secs));
+    let found_t = found.clone();
+    let switch_t = switch_round.clone();
+    tokio::spawn(async move {
+        loop {
+            if found_t.load(Ordering::Relaxed) {
+                break;
+            }
 
-    // Preallocated buffers (CRITICAL for performance)
-    let mut buf = [0u8; 116];
-    let mut hash = [0u8; 32];
+            sleep(Duration::from_secs(delay.load(Ordering::Relaxed))).await;
 
-    // layout:
-    // [0..32]   challenge
-    // [32..64]  round
-    // [64..84]  address
-    // [84..116] nonce
-
-    buf[0..32].copy_from_slice(&challenge);
-    encode_u256(&mut buf[32..64], U256::from(round));
-    buf[64..84].copy_from_slice(address.as_slice());
-
-    loop {
-        encode_u256(&mut buf[84..116], U256::from(nonce));
-
-        keccak256(&buf, &mut hash);
-
-        let tier = match_suffix(&hash, &challenge);
-
-        if tier >= 10 {
-            println!(
-                "[FOUND] round={} nonce={} tier={}",
-                round, nonce, tier
-            );
-
-            crate::claim::submit_claim(
-                args,
-                signer,
-                contract,
-                round,
-                nonce,
-            ).await?;
-            return Ok(());
-        }
-
-        if nonce % 10_000 == 0 && Instant::now() >= *next_check {
-            let latest = provider.get_block_number().await?;
+            let latest = match provider.get_block_number().await {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
 
             if latest - 1 != round {
                 println!("[SWITCH] new round detected");
-                *next_check += Duration::from_secs(args.round_check_delay_secs);
-                return Ok(());
+                switch_t.store(true, Ordering::Relaxed);
+                break;
             }
-
-            *next_check += Duration::from_secs(1);
+            delay.store(1, Ordering::Relaxed);
         }
+    });
 
-        nonce = nonce.wrapping_add(1);
+    rayon::scope(|scope| {
+        for id in 0..threads {
+            let found = found.clone();
+            let switch = switch_round.clone();
+            let nonce = nonce.clone();
+
+            scope.spawn(move |_| {
+                let mut nonce_local = args.nonce + id as u64;
+
+                // Preallocated buffers (CRITICAL for performance)
+                let mut buf = [0u8; 116];
+                let mut hash = [0u8; 32];
+
+                // layout:
+                // [0..32]   challenge
+                // [32..64]  round
+                // [64..84]  address
+                // [84..116] nonce
+
+                buf[0..32].copy_from_slice(&challenge);
+                encode_u256(&mut buf[32..64], U256::from(round));
+                buf[64..84].copy_from_slice(address.as_slice());
+
+                loop {
+                    if found.load(Ordering::Relaxed) || switch.load(Ordering::Relaxed) {
+                        return;
+                    }
+
+                    encode_u256(&mut buf[84..116], U256::from(nonce_local));
+
+                    keccak256(&buf, &mut hash);
+
+                    let tier = match_suffix(&hash, &challenge);
+
+                    if tier >= 10 {
+                        if found.compare_exchange(
+                                false,
+                                true,
+                                Ordering::SeqCst,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                        {
+                            nonce.store(nonce_local, Ordering::Relaxed);
+
+                            println!(
+                                "[FOUND] thread={} round={} nonce={} tier={}",
+                                id,
+                                round,
+                                nonce_local,
+                                tier
+                            );
+
+                            return;
+                        }
+
+                        return;
+                    }
+
+                    nonce_local = nonce_local.wrapping_add(threads as u64);
+                }
+            });
+        }
+    });
+
+    if switch_round.load(Ordering::Relaxed) {
+        return Ok(());
     }
+
+    if !found.load(Ordering::Relaxed) {
+        return Ok(());
+    }
+
+    crate::claim::submit_claim(
+        args,
+        signer.clone(),
+        contract.clone(),
+        round,
+        nonce.load(Ordering::Relaxed),
+    ).await?;
+    
+    Ok(())
 }
 
 /// Keccak-256 (no allocations)

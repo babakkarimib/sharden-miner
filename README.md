@@ -1,6 +1,6 @@
 # SHARDEN CPU Miner
 
-A single-threaded CPU miner for the SHARDEN token and the Shardhash Protocol.
+A multi-threaded CPU miner for the SHARDEN token and the Shardhash Protocol.
 
 The Shardhash Protocol repository, including the protocol implementation, smart contracts, and documentation, is available at:
 

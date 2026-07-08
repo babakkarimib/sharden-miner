@@ -1,9 +1,7 @@
-use std::time::{Duration, Instant};
-
 use anyhow::{anyhow, Result};
 
 use alloy::{
-    eips::BlockNumberOrTag, primitives::{B256, FixedBytes}, providers::{Provider, ProviderBuilder},
+    eips::BlockNumberOrTag, primitives::{Address, B256, FixedBytes}, providers::{Provider, ProviderBuilder}, signers::local::PrivateKeySigner,
 };
 
 use crate::{
@@ -17,10 +15,14 @@ pub async fn run(args: Args) -> Result<()> {
         .connect(&args.rpc)
         .await?;
 
+    let signer: PrivateKeySigner = args.private_key.parse()
+        .map_err(|_| anyhow::anyhow!("invalid private_key format"))?;
+
+    let contract: Address = args.contract.parse()
+        .map_err(|_| anyhow::anyhow!("invalid contract address"))?;
+
     let mut hashes = Vec::<B256>::with_capacity(16);
     let mut initial = true;
-
-    let mut next_check = Instant::now() + Duration::from_secs(args.round_check_delay_secs);
 
     loop {
         let latest = provider.get_block_number().await?;
@@ -40,11 +42,12 @@ pub async fn run(args: Args) -> Result<()> {
         println!("Challenge : 0x{}", hex::encode(challenge));
 
         miner::mine(
-            &provider,
+            provider.clone(),
             &args,
             round,
             challenge,
-            &mut next_check
+            &signer,
+            &contract
         )
         .await?;
     }
