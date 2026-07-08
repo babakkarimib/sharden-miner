@@ -36,20 +36,13 @@ pub async fn submit_claim(
     Ok(())
 }
 
-use tiny_keccak::{Hasher, Keccak};
+/// Function selector for `claim(uint256,uint256)`.
+const CLAIM_SELECTOR: [u8; 4] = [0xc3, 0x49, 0x02, 0x63];
 
 fn encode_claim(round: u64, nonce: u64) -> Vec<u8> {
     let mut data = Vec::with_capacity(68);
 
-    let selector = {
-        let mut keccak = Keccak::v256();
-        keccak.update(b"claim(uint256,uint256)");
-        let mut out = [0u8; 32];
-        keccak.finalize(&mut out);
-        out[..4].to_vec()
-    };
-
-    data.extend_from_slice(&selector);
+    data.extend_from_slice(&CLAIM_SELECTOR);
     data.extend_from_slice(&pad_u256(round));
     data.extend_from_slice(&pad_u256(nonce));
 
