@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use anyhow::{anyhow, Result};
 
 use alloy::{
@@ -17,6 +19,8 @@ pub async fn run(args: Args) -> Result<()> {
 
     let mut hashes = Vec::<B256>::with_capacity(16);
     let mut initial = true;
+
+    let mut next_check = Instant::now() + Duration::from_secs(args.round_check_delay_secs);
 
     loop {
         let latest = provider.get_block_number().await?;
@@ -40,6 +44,7 @@ pub async fn run(args: Args) -> Result<()> {
             &args,
             round,
             challenge,
+            &mut next_check
         )
         .await?;
     }

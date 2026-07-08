@@ -12,6 +12,7 @@ pub async fn mine(
     args: &Args,
     round: u64,
     challenge: [u8; 32],
+    next_check: &mut Instant
 ) -> Result<()> {
     let signer: PrivateKeySigner = args.private_key.parse()
         .map_err(|_| anyhow::anyhow!("invalid private_key format"))?;
@@ -36,8 +37,6 @@ pub async fn mine(
     encode_u256(&mut buf[32..64], U256::from(round));
     buf[64..84].copy_from_slice(address.as_slice());
 
-    let mut next_check = Instant::now() + Duration::from_secs(args.round_check_delay_secs);
-
     loop {
         encode_u256(&mut buf[84..116], U256::from(nonce));
 
@@ -61,15 +60,16 @@ pub async fn mine(
             return Ok(());
         }
 
-        if nonce % 10_000 == 0 && Instant::now() >= next_check {
+        if nonce % 10_000 == 0 && Instant::now() >= *next_check {
             let latest = provider.get_block_number().await?;
 
             if latest - 1 != round {
                 println!("[SWITCH] new round detected");
+                *next_check += Duration::from_secs(args.round_check_delay_secs);
                 return Ok(());
             }
 
-            next_check += Duration::from_secs(1);
+            *next_check += Duration::from_secs(1);
         }
 
         nonce = nonce.wrapping_add(1);
