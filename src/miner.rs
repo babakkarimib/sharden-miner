@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 use alloy::{primitives::{Address, U256}, providers::Provider, signers::local::PrivateKeySigner};
 use tiny_keccak::{Hasher, Keccak};
@@ -34,6 +36,8 @@ pub async fn mine(
     encode_u256(&mut buf[32..64], U256::from(round));
     buf[64..84].copy_from_slice(address.as_slice());
 
+    let mut next_check = Instant::now() + Duration::from_secs(args.round_check_delay_secs);
+
     loop {
         encode_u256(&mut buf[84..116], U256::from(nonce));
 
@@ -57,13 +61,15 @@ pub async fn mine(
             return Ok(());
         }
 
-        if nonce % 10_000 == 0 {
+        if nonce % 10_000 == 0 && Instant::now() >= next_check {
             let latest = provider.get_block_number().await?;
 
             if latest - 1 != round {
                 println!("[SWITCH] new round detected");
-                return Ok(()); // go back to RPC loop
+                return Ok(());
             }
+
+            next_check += Duration::from_secs(1);
         }
 
         nonce = nonce.wrapping_add(1);

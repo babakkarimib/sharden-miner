@@ -4,7 +4,7 @@ A single-threaded CPU miner for the SHARDEN token and the Shardhash Protocol.
 
 The Shardhash Protocol repository, including the protocol implementation, smart contracts, and documentation, is available at:
 
-* https://github.com/babakkarimib/shardhash
+- https://github.com/babakkarimib/shardhash
 
 ## Install Rust
 
@@ -36,9 +36,18 @@ cargo build --release
 ```bash
 cargo run --release -- \
     --rpc https://YOUR_RPC_URL \
-    --private-key YOUR_PRIVATE_KEY \
-    --contract 0x295121422B9d0Fd3cBddC9E203ae9b4a1EfF0082
+    --private-key YOUR_PRIVATE_KEY
 ```
+
+## Arguments
+
+| Argument | Description | Default |
+|----------|-------------|---------|
+| `--rpc` | Ethereum JSON-RPC endpoint. | **Required** |
+| `--private-key` | Ethereum private key used for mining and submitting claims. | **Required** |
+| `--contract` | Deployed Shardhash contract address. | `0x295121422B9d0Fd3cBddC9E203ae9b4a1EfF0082` |
+| `--nonce` | Starting nonce for the mining search. | `0` |
+| `--round-check-delay-secs` | Seconds to wait before checking whether a new mining round has started. | `11` |
 
 ## License
 
