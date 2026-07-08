@@ -1,9 +1,7 @@
 use anyhow::{anyhow, Result};
 
 use alloy::{
-    eips::BlockNumberOrTag,
-    primitives::B256,
-    providers::{Provider, ProviderBuilder},
+    eips::BlockNumberOrTag, primitives::{B256, FixedBytes}, providers::{Provider, ProviderBuilder},
 };
 
 use crate::{
@@ -17,6 +15,9 @@ pub async fn run(args: Args) -> Result<()> {
         .connect(&args.rpc)
         .await?;
 
+    let mut hashes = Vec::<B256>::with_capacity(16);
+    let mut initial = true;
+
     loop {
         let latest = provider.get_block_number().await?;
 
@@ -28,7 +29,8 @@ pub async fn run(args: Args) -> Result<()> {
 
         let round = latest - 1;
 
-        let challenge = fetch_challenge(&provider, round).await?;
+        let challenge = fetch_challenge(&mut hashes, &provider, round, initial).await?;
+        initial = false;
 
         println!("Round     : {}", round);
         println!("Challenge : 0x{}", hex::encode(challenge));
@@ -44,14 +46,14 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 async fn fetch_challenge<P>(
+    hashes: &mut Vec<FixedBytes<32>>,
     provider: &P,
     round: u64,
+    initial: bool
 ) -> Result<[u8; 32]>
 where
     P: Provider,
 {
-    let mut hashes = Vec::<B256>::with_capacity(16);
-
     for i in 0..16 {
         let block = provider
             .get_block_by_number(
@@ -59,6 +61,13 @@ where
             )
             .await?
             .ok_or_else(|| anyhow!("missing block"))?;
+
+        if !initial {
+            hashes.rotate_right(1);
+            hashes[0] = block.hash();
+
+            break;
+        }
 
         hashes.push(block.hash());
     }
