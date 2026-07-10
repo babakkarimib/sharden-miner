@@ -105,8 +105,6 @@ pub async fn mine(
                                 nonce_local,
                                 tier
                             );
-
-                            return;
                         }
 
                         return;
