@@ -77,7 +77,7 @@ pub async fn mine(
                 buf[64..84].copy_from_slice(address.as_slice());
 
                 loop {
-                    if found.load(Ordering::Relaxed) || switch.load(Ordering::Relaxed) {
+                    if switch.load(Ordering::Relaxed) || found.load(Ordering::Relaxed) {
                         return;
                     }
 
