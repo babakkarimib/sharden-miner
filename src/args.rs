@@ -15,6 +15,6 @@ pub struct Args {
     #[arg(long, default_value_t = 0)]
     pub nonce: u64,
 
-    #[arg(long, default_value_t = 11)]
+    #[arg(long, default_value_t = 12)]
     pub round_check_delay_secs: u64,
 }

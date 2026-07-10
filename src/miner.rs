@@ -36,8 +36,6 @@ pub async fn mine(
                 break;
             }
 
-            sleep(Duration::from_secs(delay.load(Ordering::Relaxed))).await;
-
             let latest = match provider.get_block_number().await {
                 Ok(n) => n,
                 Err(_) => continue,
@@ -48,6 +46,9 @@ pub async fn mine(
                 switch_t.store(true, Ordering::Relaxed);
                 break;
             }
+
+            sleep(Duration::from_secs(delay.load(Ordering::Relaxed))).await;
+            
             delay.store(1, Ordering::Relaxed);
         }
     });

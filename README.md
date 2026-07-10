@@ -47,7 +47,7 @@ cargo run --release -- \
 | `--private-key` | Ethereum private key used for mining and submitting claims. | **Required** |
 | `--contract` | Deployed Shardhash contract address. | `0x295121422B9d0Fd3cBddC9E203ae9b4a1EfF0082` |
 | `--nonce` | Starting nonce for the mining search. | `0` |
-| `--round-check-delay-secs` | Seconds to wait before checking whether a new mining round has started. | `11` |
+| `--round-check-delay-secs` | Seconds to wait before checking whether a new mining round has started. | `1` |
 
 ## License
 
