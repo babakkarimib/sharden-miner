@@ -4,7 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-alloy = { version = "2.1.0", features = ["full"] }
+alloy = { version = "2.1.0", default-features = false, features = [
+    "providers",
+    "provider-http",
+    "reqwest",
+    "reqwest-native-tls",
+    "contract",
+    "rpc-types",
+    "signers",
+    "signer-local",
+    "network",
+] }
 tiny-keccak = { version = "2.0.2", features = ["keccak"] }
 tokio = { version = "1.47", features = ["full"] }
 clap = { version = "4.5", features = ["derive"] }
