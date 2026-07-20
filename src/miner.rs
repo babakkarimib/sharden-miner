@@ -77,7 +77,7 @@ pub async fn mine(
                 buf[64..84].copy_from_slice(address.as_slice());
 
                 loop {
-                    if switch.load(Ordering::Relaxed) || found.load(Ordering::Relaxed) {
+                    if found.load(Ordering::Relaxed) || switch.load(Ordering::Relaxed) {
                         return;
                     }
 
@@ -88,24 +88,16 @@ pub async fn mine(
                     let tier = match_suffix(&hash, &challenge);
 
                     if tier >= 10 {
-                        if found.compare_exchange(
-                                false,
-                                true,
-                                Ordering::SeqCst,
-                                Ordering::Relaxed,
-                            )
-                            .is_ok()
-                        {
-                            nonce.store(nonce_local, Ordering::Relaxed);
+                        found.store(true, Ordering::Relaxed);
+                        nonce.store(nonce_local, Ordering::Relaxed);
 
-                            println!(
-                                "[FOUND] thread={} round={} nonce={} tier={}",
-                                id,
-                                round,
-                                nonce_local,
-                                tier
-                            );
-                        }
+                        println!(
+                            "[FOUND] thread={} round={} nonce={} tier={}",
+                            id,
+                            round,
+                            nonce_local,
+                            tier
+                        );
 
                         return;
                     }
