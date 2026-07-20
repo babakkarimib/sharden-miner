@@ -33,10 +33,10 @@ pub async fn run(args: Args) -> Result<()> {
 
     let round = latest - 1;
 
-    for i in 0..15 {
+    for i in 0..16 {
         let block = provider
             .get_block_by_number(
-                BlockNumberOrTag::Number(round - i),
+                BlockNumberOrTag::Number(round - 1 - i),
             )
             .await?
             .ok_or_else(|| anyhow!("missing block"))?;

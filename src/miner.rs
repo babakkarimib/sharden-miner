@@ -56,7 +56,7 @@ where
 
             if round_ != round_check.load(Ordering::Relaxed) {
                 match provider_round
-                    .get_block_by_number(BlockNumberOrTag::Number(round_))
+                    .get_block_by_number(BlockNumberOrTag::Number(round_ - 1))
                     .await
                 {
                     Ok(Some(block)) => {
