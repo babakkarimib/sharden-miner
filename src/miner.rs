@@ -1,8 +1,8 @@
 use tokio::time::{Duration, sleep};
 
 use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+    Arc, RwLock,
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use alloy::{
@@ -21,42 +21,61 @@ use crate::{args::Args, challenge};
 pub async fn mine<P>(
     provider: P,
     args: Args,
-    mut round: u64,
-    mut challenge: [u8; 32],
+    round: u64,
+    challenge: [u8; 32],
     signer: PrivateKeySigner,
     contract: Address,
-    mut hashes: Vec<FixedBytes<32>>,
+    hashes: Vec<FixedBytes<32>>,
 ) -> Result<()>
 where
     P: Provider + Clone + 'static,
 {
     let address: Address = signer.address();
-    let mut nonce = args.nonce;
-    let mut found = false;
     let threads = rayon::current_num_threads();
-    let delay = Arc::new(AtomicU64::new(args.round_check_delay_secs));
-
-    let provider_round = provider.clone();
-    let provider_claim = provider.clone();
+    let round = Arc::new(AtomicU64::new(round));
+    let nonce = Arc::new(AtomicU64::new(args.nonce));
+    let found = Arc::new(AtomicBool::new(false));
+    let challenge = Arc::new(RwLock::new(challenge));
+    let hashes = Arc::new(RwLock::new(hashes));
 
     // round check
+    let provider_round = provider.clone();
+    let delay = AtomicU64::new(args.round_check_delay_secs);
+    let round_check = Arc::clone(&round);
+    let found_check = Arc::clone(&found);
+    let challenge_check = Arc::clone(&challenge);
+    let hashes_check = Arc::clone(&hashes);
     tokio::spawn(async move {
         loop {
-            let latest = match provider.get_block_number().await {
+            let latest = match provider_round.get_block_number().await {
                 Ok(n) => n,
                 Err(_) => continue,
             };
 
-            if latest - 1 != round {
-                round = latest - 1;
-                hashes.rotate_right(1);
+            let round_ = latest - 1;
+
+            if round_ != round_check.load(Ordering::Relaxed) {
                 match provider_round
-                    .get_block_by_number(BlockNumberOrTag::Number(round))
+                    .get_block_by_number(BlockNumberOrTag::Number(round_))
                     .await
                 {
                     Ok(Some(block)) => {
-                        hashes[0] = block.hash();
-                        challenge = challenge::compute(&hashes);
+                        let new_challenge = {
+                            let mut hashes = hashes_check.write().unwrap();
+                            hashes.rotate_right(1);
+                            hashes[0] = block.hash();
+                            challenge::compute(&hashes)
+                        };
+
+                        *challenge_check.write().unwrap() = new_challenge;
+
+                        round_check.store(round_, Ordering::Relaxed);
+                        found_check.store(false, Ordering::Release);
+
+                        println!("[SWITCH] new round detected");
+                        println!("Latest block: {}", latest);
+                        println!("Round     : {}", round_);
+                        println!("Challenge : 0x{}", hex::encode(new_challenge));
                     }
                     Ok(None) => {
                         eprintln!("missing block");
@@ -67,10 +86,6 @@ where
                         continue;
                     }
                 }
-                println!("[SWITCH] new round detected");
-                println!("Latest block: {}", latest);
-                println!("Round     : {}", round);
-                println!("Challenge : 0x{}", hex::encode(challenge));
             }
 
             sleep(Duration::from_secs(delay.load(Ordering::Relaxed))).await;
@@ -80,52 +95,69 @@ where
     });
 
     // found check
+    let provider_claim = provider.clone();
+    let round_claim = Arc::clone(&round);
+    let nonce_claim = Arc::clone(&nonce);
+    let found_claim = Arc::clone(&found);
     tokio::spawn(async move {
         loop {
-            if found {
-                let calldata = encode_claim(round, nonce);
+            if !found_claim.load(Ordering::Acquire) {
+                sleep(Duration::from_millis(1)).await;
+                continue;
+            }
+            
+            let round_ = round_claim.load(Ordering::Acquire);
+            let nonce_ = nonce_claim.load(Ordering::Acquire);
 
-                let tx = TransactionRequest::default()
-                    .to(contract)
-                    .input(calldata.into())
-                    .value(U256::ZERO);
+            found_claim.store(false, Ordering::Release);
 
-                match provider_claim.send_transaction(tx).await {
-                    Ok(pending) => match pending.get_receipt().await {
-                        Ok(receipt) => {
-                            println!(
-                                "[CLAIM] tx={} status={:?}",
-                                receipt.transaction_hash,
-                                receipt.status()
-                            );
-                        }
-                        Err(e) => {
-                            eprintln!("[CLAIM] failed to get receipt: {e}");
-                            return;
-                            // or: continue;
-                            // or: return Err(e.into());
-                        }
-                    },
-                    Err(e) => {
-                        eprintln!("[CLAIM] failed to send transaction: {e}");
-                        return;
-                        // or: continue;
-                        // or: return Err(e.into());
+            let calldata = encode_claim(round_, nonce_);
+
+            let tx = TransactionRequest::default()
+                .to(contract)
+                .input(calldata.into())
+                .value(U256::ZERO);
+
+            match provider_claim.send_transaction(tx).await {
+                Ok(pending) => match pending.get_receipt().await {
+                    Ok(receipt) => {
+                        println!(
+                            "[CLAIM] tx={} status={:?}",
+                            receipt.transaction_hash,
+                            receipt.status()
+                        );
                     }
+                    Err(e) => {
+                        eprintln!("[CLAIM] failed to get receipt: {e}");
+                    }
+                },
+                Err(e) => {
+                    eprintln!("[CLAIM] failed to send transaction: {e}");
                 }
             }
         }
     });
 
+    //mining
     rayon::scope(|scope| {
         for id in 0..threads {
+            let round_mine = Arc::clone(&round);
+            let challenge_mine = Arc::clone(&challenge);
+            let found_mine = Arc::clone(&found);
+            let nonce_mine = Arc::clone(&nonce);
+
             scope.spawn(move |_| {
                 let mut nonce_ = args.nonce + id as u64;
-                let mut round_ = round;
+                let mut round_ = round_mine.load(Ordering::Relaxed);
+                let mut new_challenge = *challenge_mine.read().unwrap();
 
                 // Preallocated buffers (CRITICAL for performance)
                 let mut buf = [0u8; 116];
                 let mut hash = [0u8; 32];
+
+                buf[0..32].copy_from_slice(&new_challenge);
+                encode_u256(&mut buf[32..64], U256::from(round_));
+                buf[64..84].copy_from_slice(address.as_slice());
 
                 // layout:
                 // [0..32]   challenge
@@ -134,29 +166,32 @@ where
                 // [84..116] nonce
 
                 loop {
-                    if round != round_ {
-                        round_ = round;
-                        buf[0..32].copy_from_slice(&challenge);
+                    let current_round = round_mine.load(Ordering::Relaxed);
+                    if current_round != round_ {
+                        round_ = current_round;
+                        new_challenge = *challenge_mine.read().unwrap();
+                        buf[0..32].copy_from_slice(&new_challenge);
                         encode_u256(&mut buf[32..64], U256::from(round_));
-                        buf[64..84].copy_from_slice(address.as_slice());
                     }
 
                     encode_u256(&mut buf[84..116], U256::from(nonce_));
 
                     keccak256(&buf, &mut hash);
 
-                    let tier = match_suffix(&hash, &challenge);
+                    let tier = match_suffix(&hash, &new_challenge);
 
                     if tier >= 10 {
-                        found = true;
-                        nonce = nonce_;
+                        found_mine.store(true, Ordering::Release);
+                        nonce_mine.store(nonce_, Ordering::Release);
 
                         println!(
-                            "[FOUND] thread={} round={} nonce={} tier={}",
-                            id, round_, nonce_, tier
+                            "[FOUND] 0x{}\nthread={} round={} nonce={} tier={}",
+                            hex::encode(hash),
+                            id,
+                            round_,
+                            nonce_,
+                            tier,
                         );
-
-                        return;
                     }
 
                     nonce_ = nonce_.wrapping_add(threads as u64);
