@@ -1,66 +1,127 @@
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 use std::sync::{
-    Arc, atomic::{AtomicBool, AtomicU64, Ordering},
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
+use alloy::{
+    eips::BlockNumberOrTag,
+    primitives::{Address, FixedBytes, U256},
+    providers::Provider,
+    rpc::types::TransactionRequest,
+    signers::local::PrivateKeySigner,
+};
 use anyhow::Result;
-use alloy::{primitives::{Address, U256}, providers::Provider, signers::local::PrivateKeySigner};
 use tiny_keccak::{Hasher, Keccak};
 
-use crate::args::Args;
+use crate::{args::Args, challenge};
 
 /// Entry point from RPC layer
-pub async fn mine(
-    provider: impl Provider + 'static,
-    args: &Args,
-    round: u64,
-    challenge: [u8; 32],
-    signer: &PrivateKeySigner,
-    contract: &Address
-
-) -> Result<()> {
+pub async fn mine<P>(
+    provider: P,
+    args: Args,
+    mut round: u64,
+    mut challenge: [u8; 32],
+    signer: PrivateKeySigner,
+    contract: Address,
+    mut hashes: Vec<FixedBytes<32>>,
+) -> Result<()>
+where
+    P: Provider + Clone + 'static,
+{
     let address: Address = signer.address();
-
+    let mut nonce = args.nonce;
+    let mut found = false;
     let threads = rayon::current_num_threads();
-    let nonce = Arc::new(AtomicU64::new(args.nonce));
-    let found = Arc::new(AtomicBool::new(false));
-    let switch_round = Arc::new(AtomicBool::new(false));
-
     let delay = Arc::new(AtomicU64::new(args.round_check_delay_secs));
-    let found_t = found.clone();
-    let switch_t = switch_round.clone();
+
+    let provider_round = provider.clone();
+    let provider_claim = provider.clone();
+
+    // round check
     tokio::spawn(async move {
         loop {
-            if found_t.load(Ordering::Relaxed) {
-                break;
-            }
-
             let latest = match provider.get_block_number().await {
                 Ok(n) => n,
                 Err(_) => continue,
             };
 
             if latest - 1 != round {
+                round = latest - 1;
+                hashes.rotate_right(1);
+                match provider_round
+                    .get_block_by_number(BlockNumberOrTag::Number(round))
+                    .await
+                {
+                    Ok(Some(block)) => {
+                        hashes[0] = block.hash();
+                        challenge = challenge::compute(&hashes);
+                    }
+                    Ok(None) => {
+                        eprintln!("missing block");
+                        continue;
+                    }
+                    Err(e) => {
+                        eprintln!("RPC error: {e}");
+                        continue;
+                    }
+                }
                 println!("[SWITCH] new round detected");
-                switch_t.store(true, Ordering::Relaxed);
-                break;
+                println!("Latest block: {}", latest);
+                println!("Round     : {}", round);
+                println!("Challenge : 0x{}", hex::encode(challenge));
             }
 
             sleep(Duration::from_secs(delay.load(Ordering::Relaxed))).await;
-            
+
             delay.store(1, Ordering::Relaxed);
+        }
+    });
+
+    // found check
+    tokio::spawn(async move {
+        loop {
+            if found {
+                let calldata = encode_claim(round, nonce);
+
+                let tx = TransactionRequest::default()
+                    .to(contract)
+                    .input(calldata.into())
+                    .value(U256::ZERO);
+
+                match provider_claim.send_transaction(tx).await {
+                    Ok(pending) => match pending.get_receipt().await {
+                        Ok(receipt) => {
+                            println!(
+                                "[CLAIM] tx={} status={:?}",
+                                receipt.transaction_hash,
+                                receipt.status()
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!("[CLAIM] failed to get receipt: {e}");
+                            return;
+                            // or: continue;
+                            // or: return Err(e.into());
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("[CLAIM] failed to send transaction: {e}");
+                        return;
+                        // or: continue;
+                        // or: return Err(e.into());
+                    }
+                }
+            }
         }
     });
 
     rayon::scope(|scope| {
         for id in 0..threads {
-            let found = found.clone();
-            let switch = switch_round.clone();
-            let nonce = nonce.clone();
-
             scope.spawn(move |_| {
-                let mut nonce_local = args.nonce + id as u64;
+                let mut nonce_ = args.nonce + id as u64;
+                let mut round_ = round;
 
                 // Preallocated buffers (CRITICAL for performance)
                 let mut buf = [0u8; 116];
@@ -72,58 +133,38 @@ pub async fn mine(
                 // [64..84]  address
                 // [84..116] nonce
 
-                buf[0..32].copy_from_slice(&challenge);
-                encode_u256(&mut buf[32..64], U256::from(round));
-                buf[64..84].copy_from_slice(address.as_slice());
-
                 loop {
-                    if found.load(Ordering::Relaxed) || switch.load(Ordering::Relaxed) {
-                        return;
+                    if round != round_ {
+                        round_ = round;
+                        buf[0..32].copy_from_slice(&challenge);
+                        encode_u256(&mut buf[32..64], U256::from(round_));
+                        buf[64..84].copy_from_slice(address.as_slice());
                     }
 
-                    encode_u256(&mut buf[84..116], U256::from(nonce_local));
+                    encode_u256(&mut buf[84..116], U256::from(nonce_));
 
                     keccak256(&buf, &mut hash);
 
                     let tier = match_suffix(&hash, &challenge);
 
                     if tier >= 10 {
-                        found.store(true, Ordering::Relaxed);
-                        nonce.store(nonce_local, Ordering::Relaxed);
+                        found = true;
+                        nonce = nonce_;
 
                         println!(
                             "[FOUND] thread={} round={} nonce={} tier={}",
-                            id,
-                            round,
-                            nonce_local,
-                            tier
+                            id, round_, nonce_, tier
                         );
 
                         return;
                     }
 
-                    nonce_local = nonce_local.wrapping_add(threads as u64);
+                    nonce_ = nonce_.wrapping_add(threads as u64);
                 }
             });
         }
     });
 
-    if switch_round.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-
-    if !found.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-
-    crate::claim::submit_claim(
-        args,
-        signer.clone(),
-        contract.clone(),
-        round,
-        nonce.load(Ordering::Relaxed),
-    ).await?;
-    
     Ok(())
 }
 
@@ -165,4 +206,22 @@ fn match_suffix(candidate: &[u8; 32], challenge: &[u8; 32]) -> u8 {
 fn encode_u256(out: &mut [u8], value: U256) {
     let bytes = value.to_be_bytes::<32>();
     out.copy_from_slice(&bytes);
+}
+
+const CLAIM_SELECTOR: [u8; 4] = [0xc3, 0x49, 0x02, 0x63];
+
+fn encode_claim(round: u64, nonce: u64) -> Vec<u8> {
+    let mut data = Vec::with_capacity(68);
+
+    data.extend_from_slice(&CLAIM_SELECTOR);
+    data.extend_from_slice(&pad_u256(round));
+    data.extend_from_slice(&pad_u256(nonce));
+
+    data
+}
+
+fn pad_u256(x: u64) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[24..32].copy_from_slice(&x.to_be_bytes());
+    out
 }
