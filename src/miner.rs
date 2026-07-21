@@ -243,6 +243,7 @@ fn encode_u256(out: &mut [u8], value: U256) {
     out.copy_from_slice(&bytes);
 }
 
+/// claim(uint256,bytes32)
 const CLAIM_SELECTOR: [u8; 4] = [0xc3, 0x49, 0x02, 0x63];
 
 fn encode_claim(round: u64, nonce: u64) -> Vec<u8> {
