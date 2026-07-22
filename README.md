@@ -6,6 +6,11 @@ The Shardhash Protocol repository, including the protocol implementation, smart 
 
 - https://github.com/babakkarimib/shardhash
 
+Ethereum:
+
+- Token: https://etherscan.io/token/0xbE8C49840e12718d9fA3c740f32eAB808Edd8780
+- Protocol Contract: https://etherscan.io/address/0x295121422b9d0fd3cbddc9e203ae9b4a1eff0082
+
 ## Install Rust
 
 Install the latest stable Rust toolchain:
